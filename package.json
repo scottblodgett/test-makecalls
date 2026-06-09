@@ -1,0 +1,17 @@
+{
+  "name": "makecalls-health-check",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "check": "npx tsx health-check.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
