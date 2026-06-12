@@ -93,7 +93,12 @@ This means the **most recent run's row is left as residue** — pass or fail —
 | `RESULTS_RECIPIENT` | _(optional)_ results-email recipient for leg 6. **Must be a real, deliverable mailbox** — a hard bounce permanently blocklists it in Brevo and leg 6 can never pass again. Defaults to `scottblodgett+healthcheck@gmail.com` |
 | `RESULTS_TENANT_EMAIL` / `RESULTS_LANDLORD_EMAIL` | _(optional)_ tenant/landlord addresses on the synthetic CallRequest. Same deliverability rule. Default to `+hc-tenant` / `+hc-landlord` Gmail aliases |
 
-## What's next
+## Deployment
 
-- Copy repo to Hermes
-- Wire into Chuck's cron (runs every few days, alerts on non-zero exit)
+Live on Hermes at `/home/scott/makecalls-health-check` (clone of this repo's `origin/master`). Wired into cron and confirmed running, with Chuck's wrapper parsing `~/health-check-result.json` and emailing on non-zero exit.
+
+**To deploy a change:** push to `origin/master`, then `git pull` (and `npm ci` if deps changed) on Hermes. `~/.hermes/.env` is not in git, so it's never touched by a pull; the optional `RESULTS_*` vars fall back to baked-in defaults if unset.
+
+## Known gaps
+
+- **Leg 6 asserts delivery, not content.** It confirms Brevo `delivered` but does not assert the results email actually contains the access code / results link. Those params are built by the `callback-ai` app's `/api/results/send-email`, not this harness — a regression there could blank the email while leg 6 stays green. Deliberately not gold-plated (per the spec); revisit only if it bites.
