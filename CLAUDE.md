@@ -56,7 +56,11 @@ The health check uses `script_template: tuning_smoke_test` (set via direct DB up
 
 ## Cleanup
 
-A `finally` block always runs and deletes the `CallRequest` (cascades to `call_recordings`) and the `free_trial_signups` row created during the run. No DB pollution.
+Cleanup happens at the **start** of each run, not the end: `sweepResidue()` deletes any `CallRequest` rows from earlier runs (matched on the sentinel `property_address = '1 Health Check Lane, Boston, MA 02101'`, cascades to `call_recordings`) plus the synthetic `free_trial_signups` rows (`email LIKE 'token-generated-%@internal'`), then creates this run's fresh row.
+
+This means the **most recent run's row is left as residue** — pass or fail — so a red run is always inspectable in the dashboard/DB, and the next run sweeps it. Doing it at the start (rather than an end-of-run `finally`) guarantees it fires no matter how the previous run exited: clean pass, failed leg, crash, or a hung/killed process. Tradeoff: exactly one synthetic "Test Tenant / Responder Bot" row is always present in the dashboard.
+
+`fail()` throws (caught at the top level, which sets `process.exitCode = 1`) rather than calling `process.exit()`, so the `finally` that closes the DB connection always runs.
 
 ## Report format
 

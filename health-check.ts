@@ -57,6 +57,11 @@ const RESULTS_RECIPIENT  = optional('RESULTS_RECIPIENT', 'scottblodgett+healthch
 const TENANT_EMAIL       = optional('RESULTS_TENANT_EMAIL', 'scottblodgett+hc-tenant@gmail.com');
 const LANDLORD_EMAIL     = optional('RESULTS_LANDLORD_EMAIL', 'scottblodgett+hc-landlord@gmail.com');
 
+// Sentinel that marks a CallRequest as belonging to this harness. No real
+// customer (or real /tuning session) ever submits this exact property address,
+// so it's a safe key for sweeping prior runs' rows without touching real data.
+const HC_PROPERTY_ADDRESS = '1 Health Check Lane, Boston, MA 02101';
+
 // ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
@@ -111,13 +116,17 @@ const LEG_TIMEOUTS: Record<number, number> = {
 
 type BrevoEvent = { event: string; date: string; messageId?: string; reason?: string };
 
+// A leg failed as designed (already reported). Throwing instead of exiting lets
+// the promise chain's `.finally` close the DB connection cleanly on the way out.
+class LegFailure extends Error {}
+
 function fail(leg: number, expected: string, got: string): never {
   legs.push({ leg, name: LEG_NAMES[leg], passed: false, error: got });
   writeReport(false);
   console.error(`\nLEG ${leg} FAILED`);
   console.error(`  expected: ${expected}`);
   console.error(`  got:      ${got}`);
-  process.exit(1);
+  throw new LegFailure(`leg ${leg}`);
 }
 
 async function poll<T>(
@@ -160,25 +169,33 @@ async function dbQuery<T>(sql: string, params: unknown[] = []): Promise<T[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup — always runs, pass or fail
+// Residue sweep + connection close
 // ---------------------------------------------------------------------------
 
 let callRequestId: string | null = null;
 let promoCode: string | null = null;
 
+// Delete rows left by EARLIER runs. Runs at the START of a run (not the end),
+// so it fires no matter how the previous run exited — clean pass, failed leg,
+// crash, or a hung/killed process. The current run's row is created afterward
+// and survives as the single inspectable "last run" residue (pass or fail)
+// until the next run sweeps it. Keyed on the harness sentinels so it can never
+// touch a real customer or real /tuning row.
+async function sweepResidue() {
+  const cr = await db.query(
+    'DELETE FROM call_requests WHERE property_address = $1',
+    [HC_PROPERTY_ADDRESS],
+  ); // cascades to call_recordings
+  const ft = await db.query(
+    "DELETE FROM free_trial_signups WHERE email LIKE 'token-generated-%@internal'",
+  );
+  console.log(`  swept ${cr.rowCount ?? 0} prior call_request(s), ${ft.rowCount ?? 0} promo signup(s)`);
+}
+
+// Always runs last. Cleanup of THIS run's row is deferred to the next run's
+// sweep (so the row stays around to inspect); here we just close the socket.
 async function cleanup() {
-  if (!db) return;
-  try {
-    if (callRequestId) {
-      await db.query('DELETE FROM call_requests WHERE id = $1', [callRequestId]);
-    }
-    if (promoCode) {
-      await db.query('DELETE FROM free_trial_signups WHERE stripe_promotion_code = $1', [promoCode]);
-    }
-  } catch (e) {
-    console.error('cleanup error (non-fatal):', e);
-  }
-  await db.end();
+  if (db) await db.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +209,8 @@ async function main() {
   // LEG 1: Issue promo code + create CallRequest via bypass
   // -------------------------------------------------------------------------
   startLeg(1);
+
+  await sweepResidue();
 
   const ftRes = await post(
     `${APP_URL}/api/free-trial`,
@@ -210,11 +229,11 @@ async function main() {
       requester_email:  RESULTS_RECIPIENT,
       tenant_name:      'Test Tenant',
       tenant_email:     TENANT_EMAIL,
-      property_address: '1 Health Check Lane, Boston, MA 02101',
+      property_address: HC_PROPERTY_ADDRESS,
       landlord_name:    'Responder Bot',
       landlord_email:   LANDLORD_EMAIL,
       landlord_phone:   RESPONDER_NUM,
-      previous_address: '1 Health Check Lane, Boston, MA 02101',
+      previous_address: HC_PROPERTY_ADDRESS,
       move_in_date:     '2023-01',
       move_out_date:    '2024-01',
       monthly_rent:     1000,
@@ -391,8 +410,13 @@ async function main() {
 
 main()
   .catch(e => {
-    console.error('\nUNEXPECTED ERROR:', e);
-    writeReport(false);
-    process.exit(1);
+    // LegFailure is an expected, already-reported failure. Anything else is a
+    // crash we still need to report. Set the exit code (don't exit) so cleanup
+    // in .finally runs first.
+    if (!(e instanceof LegFailure)) {
+      console.error('\nUNEXPECTED ERROR:', e);
+      writeReport(false);
+    }
+    process.exitCode = 1;
   })
   .finally(cleanup);
