@@ -86,6 +86,8 @@ A `finally` block always runs and deletes the `CallRequest` (cascades to `call_r
 | `DEBUG_SECRET` | Cookie value to enable bypass/debug endpoints |
 | `RESPONDER_NUMBER` | `+19786253215` |
 | `BREVO_API_KEY` | For delivery confirmation check |
+| `RESULTS_RECIPIENT` | _(optional)_ results-email recipient for leg 6. **Must be a real, deliverable mailbox** — a hard bounce permanently blocklists it in Brevo and leg 6 can never pass again. Defaults to `scottblodgett+healthcheck@gmail.com` |
+| `RESULTS_TENANT_EMAIL` / `RESULTS_LANDLORD_EMAIL` | _(optional)_ tenant/landlord addresses on the synthetic CallRequest. Same deliverability rule. Default to `+hc-tenant` / `+hc-landlord` Gmail aliases |
 
 ## What's next
 

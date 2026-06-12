@@ -40,8 +40,22 @@ function required(name: string): string {
   return v;
 }
 
+function optional(name: string, fallback: string): string {
+  return process.env[name]?.trim() || fallback;
+}
+
 const RESPONDER_NUM_10 = RESPONDER_NUM.replace(/^\+1/, '');
 const REPORT_PATH = path.join(os.homedir(), 'health-check-result.json');
+
+// The results email recipient. MUST be a real, deliverable mailbox: a hard
+// bounce puts the address on Brevo's permanent block list, after which every
+// send is silently `blocked` and leg 6 can never pass again. Uses +tag aliases
+// on a real inbox so nothing bounces and the run mail stays filterable. This is
+// also the spec's "lands in your real inbox for manual eyeball when red" backstop.
+// Overridable via env (in ~/.hermes/.env); defaults keep existing setups working.
+const RESULTS_RECIPIENT  = optional('RESULTS_RECIPIENT', 'scottblodgett+healthcheck@gmail.com');
+const TENANT_EMAIL       = optional('RESULTS_TENANT_EMAIL', 'scottblodgett+hc-tenant@gmail.com');
+const LANDLORD_EMAIL     = optional('RESULTS_LANDLORD_EMAIL', 'scottblodgett+hc-landlord@gmail.com');
 
 // ---------------------------------------------------------------------------
 // Report
@@ -92,8 +106,10 @@ const LEG_TIMEOUTS: Record<number, number> = {
   3: 120_000,
   4: 120_000,
   5: 120_000,
-  6: 30_000,
+  6: 60_000,
 };
+
+type BrevoEvent = { event: string; date: string; messageId?: string; reason?: string };
 
 function fail(leg: number, expected: string, got: string): never {
   legs.push({ leg, name: LEG_NAMES[leg], passed: false, error: got });
@@ -191,12 +207,12 @@ async function main() {
     `${APP_URL}/api/payment/bypass`,
     {
       requester_name:   'Health Check',
-      requester_email:  'healthcheck@makecalls.io',
+      requester_email:  RESULTS_RECIPIENT,
       tenant_name:      'Test Tenant',
-      tenant_email:     'healthcheck+tenant@makecalls.io',
+      tenant_email:     TENANT_EMAIL,
       property_address: '1 Health Check Lane, Boston, MA 02101',
       landlord_name:    'Responder Bot',
-      landlord_email:   'healthcheck+landlord@makecalls.io',
+      landlord_email:   LANDLORD_EMAIL,
       landlord_phone:   RESPONDER_NUM,
       previous_address: '1 Health Check Lane, Boston, MA 02101',
       move_in_date:     '2023-01',
@@ -320,6 +336,12 @@ async function main() {
   // -------------------------------------------------------------------------
   startLeg(6);
 
+  // Capture a floor timestamp BEFORE triggering the send so we only consider
+  // Brevo events belonging to this run, never a stale `delivered` from a prior
+  // run (which would otherwise mask a real outage with a false green). 30s of
+  // slack absorbs clock skew between this box and Brevo.
+  const sendFloor = Date.now() - 30_000;
+
   const emailRes = await post(
     `${APP_URL}/api/results/send-email`,
     { callRequestId },
@@ -339,15 +361,27 @@ async function main() {
     fail(6, 'results_email_sent_at set', String(e));
   }
 
-  const brevoRes = await fetch(
-    'https://api.brevo.com/v3/smtp/statistics/events?email=healthcheck%40makecalls.io&limit=10',
-    { headers: { 'api-key': BREVO_API_KEY } },
-  );
-  if (!brevoRes.ok) fail(6, 'Brevo API 200', `${brevoRes.status}`);
-  const brevoData = await brevoRes.json() as { events?: { event: string }[] };
-  const delivered = brevoData.events?.some(e => e.event === 'delivered');
-  if (!delivered) {
-    fail(6, 'Brevo event=delivered', JSON.stringify(brevoData.events?.slice(0, 3)));
+  // Confirm Brevo actually delivered THIS send. Scope to events newer than
+  // sendFloor and fail fast on a block/bounce — a `blocked` event means the
+  // recipient is on Brevo's suppression list (the failure mode that produced
+  // this very bug), and asserting "delivered" alone would let it slip through
+  // on a stale event.
+  const recipientParam = encodeURIComponent(RESULTS_RECIPIENT);
+  try {
+    await poll(async () => {
+      const res = await fetch(
+        `https://api.brevo.com/v3/smtp/statistics/events?email=${recipientParam}&limit=20&sort=desc`,
+        { headers: { 'api-key': BREVO_API_KEY } },
+      );
+      if (!res.ok) throw new Error(`Brevo API ${res.status}`);
+      const data = await res.json() as { events?: BrevoEvent[] };
+      const recent = (data.events ?? []).filter(e => new Date(e.date).getTime() >= sendFloor);
+      const bad = recent.find(e => e.event === 'blocked' || e.event === 'hardBounces');
+      if (bad) throw new Error(`Brevo event=${bad.event}${bad.reason ? ` (${bad.reason})` : ''}`);
+      return recent.some(e => e.event === 'delivered') ? true : null;
+    }, LEG_TIMEOUTS[6]);
+  } catch (e) {
+    fail(6, 'Brevo event=delivered for this send', String(e));
   }
   pasLeg();
   console.log('  ✓ Brevo reports delivered');
