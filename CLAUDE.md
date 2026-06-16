@@ -102,3 +102,4 @@ Live on Hermes at `/home/scott/makecalls-health-check` (clone of this repo's `or
 ## Known gaps
 
 - **Leg 6 asserts delivery, not content.** It confirms Brevo `delivered` but does not assert the results email actually contains the access code / results link. Those params are built by the `callback-ai` app's `/api/results/send-email`, not this harness — a regression there could blank the email while leg 6 stays green. Deliberately not gold-plated (per the spec); revisit only if it bites.
+- **Brevo statistics API lags ~1-2 min behind actual delivery.** Leg 6 polls `GET /v3/smtp/statistics/events` for a `delivered` event; this API can be slow to index even a successful send. Observed Jun 15 2026: email arrived at 8:44:29 AM but the 60s poll timed out at 8:45:29. Timeout bumped to 120s to absorb normal lag.
