@@ -111,7 +111,7 @@ const LEG_TIMEOUTS: Record<number, number> = {
   3: 120_000,
   4: 120_000,
   5: 120_000,
-  6: 60_000,
+  6: 120_000,
 };
 
 type BrevoEvent = { event: string; date: string; messageId?: string; reason?: string };
